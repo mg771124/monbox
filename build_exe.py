@@ -1,5 +1,7 @@
 """【通用】提供不受 Windows BAT 中文编码影响的一键 EXE 编译流程。"""
 
+# 【通用】导入操作系统模块以识别 Windows 编译环境。
+import os
 # 【通用】导入子进程模块以安全调用 pip、pytest 和 PyInstaller。
 import subprocess
 # 【通用】导入系统模块以复用当前 Python 解释器并检查版本。
@@ -12,6 +14,58 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 # 【通用】定义独立 EXE 的预期输出位置。
 OUTPUT_EXE = PROJECT_ROOT / "dist" / "MonsterBox.exe"
+
+
+# 【通用】检查是否有旧版 MonsterBox 正在运行并锁定编译成品。
+def is_monsterbox_running() -> bool:
+    """【通用】在 Windows 静默查询进程，其他系统直接返回未运行。"""
+
+    # 【通用】非 Windows 系统不使用 tasklist，也没有当前覆盖锁定问题。
+    if os.name != "nt":
+        # 【通用】返回未发现 Windows 成品进程。
+        return False
+    # 【通用】建立隐藏 tasklist 子进程窗口的启动信息。
+    startup_info = subprocess.STARTUPINFO()
+    # 【通用】要求 Windows 使用隐藏窗口设置。
+    startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    # 【通用】明确将 tasklist 窗口设为隐藏。
+    startup_info.wShowWindow = subprocess.SW_HIDE
+    # 【通用】静默查询同名成品进程，不经过 Shell。
+    result = subprocess.run(
+        # 【通用】只查询 MonsterBox.exe，避免扫描或结束无关进程。
+        ["tasklist.exe", "/FI", "IMAGENAME eq MonsterBox.exe", "/NH"],
+        # 【通用】捕获查询输出供本函数判断。
+        capture_output=True,
+        # 【通用】以文本方式读取 Windows 命令输出。
+        text=True,
+        # 【通用】使用系统默认编码并容忍无法解码字符。
+        errors="replace",
+        # 【通用】限制进程查询时间，避免编译入口卡住。
+        timeout=10,
+        # 【通用】禁止 Shell 二次解析参数。
+        shell=False,
+        # 【通用】查询失败时由返回码和空输出自然判定为未发现。
+        check=False,
+        # 【通用】禁止查询命令弹出 CMD 视窗。
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        # 【通用】补充隐藏启动信息兼容旧版 Windows。
+        startupinfo=startup_info,
+    )
+    # 【通用】输出中存在进程名称时表示成品仍在运行。
+    return result.returncode == 0 and "monsterbox.exe" in result.stdout.lower()
+
+
+# 【通用】在耗时安装和测试前确认成品可以安全覆盖。
+def ensure_output_is_available() -> None:
+    """【通用】旧版程序运行时给出明确提示，不强制结束用户进程。"""
+
+    # 【通用】只有成品存在且同名进程运行时才阻止重新打包。
+    if OUTPUT_EXE.is_file() and is_monsterbox_running():
+        # 【通用】说明解决方式，避免最后阶段只显示 WinError 5。
+        raise RuntimeError(
+            "MonsterBox.exe 正在运行，Windows 不允许覆盖 dist\\MonsterBox.exe。"
+            "请先关闭全部 MonsterBox 窗口；若仍失败，请在任务管理器结束 MonsterBox.exe 后重新打包。"
+        )
 
 
 # 【通用】使用参数列表执行编译命令，禁止经过 Shell 字符串解析。
@@ -68,6 +122,8 @@ def verify_windowed_executable(executable: Path) -> None:
 def build() -> None:
     """【通用】把 Python、PySide6、OpenCV 和 NumPy 封装进独立 EXE。"""
 
+    # 【通用】先检查旧版成品是否运行，避免耗时步骤完成后才因文件锁失败。
+    ensure_output_is_available()
     # 【通用】拒绝不符合项目最低要求的 Python 版本。
     if sys.version_info < (3, 11):  # noqa: UP036
         # 【通用】提供明确的编译环境版本提示。

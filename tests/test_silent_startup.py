@@ -185,6 +185,40 @@ def test_verify_windowed_executable_accepts_pe32_gui(tmp_path: Path) -> None:
 
 
 # 【通用】验证无法识别可选头时只警告不中断编译。
+def test_build_rejects_running_output_before_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """【通用】成品运行时必须给出明确提示，不等待 PyInstaller 最后报存取拒绝。"""
+
+    # 【通用】载入编译脚本。
+    build_exe = _load_build_exe()
+    # 【通用】建立模拟的现有成品文件。
+    output = tmp_path / "MonsterBox.exe"
+    # 【通用】写入占位内容使成品路径存在。
+    output.write_bytes(b"running")
+    # 【通用】把脚本输出位置切换到隔离测试文件。
+    monkeypatch.setattr(build_exe, "OUTPUT_EXE", output)
+    # 【通用】模拟 Windows 已发现运行中的 MonsterBox 进程。
+    monkeypatch.setattr(build_exe, "is_monsterbox_running", lambda: True)
+    # 【通用】预检查必须阻止覆盖并提示先关闭程序。
+    with pytest.raises(RuntimeError, match="正在运行"):
+        # 【通用】执行成品可用性检查。
+        build_exe.ensure_output_is_available()
+
+
+# 【通用】验证不存在旧成品时不会执行进程查询。
+def test_build_allows_missing_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """【通用】首次打包不应被无关的同名进程检查阻止。"""
+
+    # 【通用】载入编译脚本。
+    build_exe = _load_build_exe()
+    # 【通用】指定一个尚不存在的成品路径。
+    monkeypatch.setattr(build_exe, "OUTPUT_EXE", tmp_path / "MonsterBox.exe")
+    # 【通用】若错误调用进程查询就主动让测试失败。
+    monkeypatch.setattr(build_exe, "is_monsterbox_running", lambda: pytest.fail("不应查询不存在的成品"))
+    # 【通用】首次打包检查应直接通过。
+    build_exe.ensure_output_is_available()
+
+
+# 【通用】验证无法识别可选头时只警告不中断编译。
 def test_verify_windowed_executable_warns_on_unknown_magic(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     """【通用】格式差异不应误判为控制台程序而中断编译。"""
 
