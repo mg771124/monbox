@@ -2,12 +2,16 @@
 
 # 【通用】导入可调用类型以描述后台任务。
 from collections.abc import Callable
+# 【通用】导入数据类替换工具以更新不可变应用配置。
+from dataclasses import replace
+# 【通用】导入路径类型以保存本机配置位置。
+from pathlib import Path
 # 【通用】导入 PySide6 核心信号和线程池组件。
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 # 【通用】导入中控台所需界面控件。
-from PySide6.QtWidgets import QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
-# 【通用】导入应用配置模型。
-from monsterbox.config import AppSettings
+from PySide6.QtWidgets import QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
+# 【通用】导入应用配置、资料夹搜索和持久化函数。
+from monsterbox.config import AppSettings, find_ldplayer_tools, save_settings
 # 【通用】导入固定角色定义。
 from monsterbox.models import Role
 # 【通用】导入雷电生命周期服务。
@@ -71,9 +75,9 @@ class CommandWorker(QRunnable):
 class MainWindow(QMainWindow):
     """【通用】MonsterBox 雷电模拟器可视化中控台主窗口。"""
 
-    # 【通用】接收已加载配置和雷电服务。
-    def __init__(self, settings: AppSettings, ldplayer: LdPlayerService) -> None:
-        """【通用】建立固定两队四角色界面。"""
+    # 【通用】接收已加载配置、雷电服务和本机配置位置。
+    def __init__(self, settings: AppSettings, ldplayer: LdPlayerService, settings_path: Path = Path("config/settings.json")) -> None:
+        """【通用】建立固定两队四角色界面和雷电资料夹选择器。"""
 
         # 【通用】初始化 Qt 主窗口。
         super().__init__()
@@ -81,6 +85,8 @@ class MainWindow(QMainWindow):
         self._settings = settings
         # 【通用】保存雷电服务，界面仅调用服务方法。
         self._ldplayer = ldplayer
+        # 【通用】保存本机配置位置以持久化用户选择结果。
+        self._settings_path = settings_path
         # 【通用】使用全局线程池执行外部命令。
         self._thread_pool = QThreadPool.globalInstance()
         # 【通用】设置包含项目版本职责的窗口标题。
@@ -91,6 +97,22 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         # 【通用】创建垂直主布局。
         layout = QVBoxLayout(central)
+        # 【通用】建立雷电安装资料夹选择区域。
+        tools_layout = QHBoxLayout()
+        # 【通用】建立当前 ldconsole 路径显示标签。
+        self._tools_path_label = QLabel(f"ldconsole：{settings.ldconsole_path}")
+        # 【通用】允许路径较长时选取复制完整内容。
+        self._tools_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # 【通用】将路径显示加入工具区域并占用剩余宽度。
+        tools_layout.addWidget(self._tools_path_label, 1)
+        # 【通用】创建雷电安装资料夹浏览按钮。
+        browse_button = QPushButton("选择雷电资料夹")
+        # 【通用】点击后打开系统原生资料夹浏览框。
+        browse_button.clicked.connect(self._choose_ldplayer_folder)
+        # 【通用】将浏览按钮加入工具区域。
+        tools_layout.addWidget(browse_button)
+        # 【通用】将工具路径区域放在两队面板上方。
+        layout.addLayout(tools_layout)
         # 【通用】建立两队横向排列区域。
         teams_layout = QHBoxLayout()
         # 【通用】为第 1 队和第 2 队分别建立角色面板。
@@ -113,6 +135,74 @@ class MainWindow(QMainWindow):
         self._append_log(f"ldconsole：{settings.ldconsole_path}")
         # 【通用】提示用户当前 ADB 配置路径。
         self._append_log(f"ADB：{settings.adb_path}")
+
+    # 【通用】打开资料夹浏览框并自动寻找雷电控制工具。
+    def _choose_ldplayer_folder(self) -> None:
+        """【通用】选择安装资料夹、自动寻找工具并保存配置。"""
+
+        # 【通用】存在当前工具目录时将其作为浏览框起点。
+        current_directory = self._settings.ldconsole_path.parent
+        # 【通用】无有效当前目录时从用户主资料夹开始选择。
+        initial_directory = current_directory if current_directory.is_dir() else Path.home()
+        # 【通用】打开系统原生资料夹选择框，让用户只需选择雷电目录。
+        selected = QFileDialog.getExistingDirectory(
+            # 【通用】将主窗口设置为对话框父对象。
+            self,
+            # 【通用】显示清晰的中文选择提示。
+            "选择雷电模拟器安装资料夹",
+            # 【通用】传入建议的初始浏览位置。
+            str(initial_directory),
+        )
+        # 【通用】用户取消选择时不修改任何现有配置。
+        if not selected:
+            # 【通用】直接结束本次选择流程。
+            return
+        # 【通用】在所选资料夹和子目录内自动搜索 ldconsole 与 ADB。
+        tools = find_ldplayer_tools(Path(selected))
+        # 【通用】缺少任一工具时保留旧配置并提示重新选择。
+        if tools is None:
+            # 【通用】以警告框说明所需文件名称。
+            QMessageBox.warning(
+                # 【通用】将主窗口设置为提示框父对象。
+                self,
+                # 【通用】设置简短警告标题。
+                "没有找到雷电工具",
+                # 【通用】说明程序已经搜索所选资料夹及其子目录。
+                "所选资料夹内找不到 ldconsole.exe 和 adb.exe，请选择雷电模拟器安装资料夹。",
+            )
+            # 【通用】停止后续路径更新和持久化。
+            return
+        # 【通用】拆分自动找到的控制台与 ADB 路径。
+        ldconsole_path, adb_path = tools
+        # 【通用】保留两队配置，仅替换外部工具路径。
+        updated_settings = replace(
+            # 【通用】以当前配置作为不可变替换来源。
+            self._settings,
+            # 【通用】写入自动发现的控制台路径。
+            ldconsole_path=ldconsole_path,
+            # 【通用】写入自动发现的 ADB 路径。
+            adb_path=adb_path,
+        )
+        # 【通用】捕获配置保存错误，避免显示已应用但实际未保存。
+        try:
+            # 【通用】将选择结果写入忽略版本控制的本机配置。
+            save_settings(self._settings_path, updated_settings)
+        # 【通用】处理目录权限或磁盘写入异常。
+        except OSError as error:
+            # 【通用】向用户显示保存失败原因。
+            QMessageBox.critical(self, "保存配置失败", str(error))
+            # 【通用】保存失败时不替换当前运行配置。
+            return
+        # 【通用】更新主窗口持有的应用配置。
+        self._settings = updated_settings
+        # 【通用】使用新路径重建雷电服务供后续按钮调用。
+        self._ldplayer = LdPlayerService(ldconsole_path)
+        # 【通用】更新界面上的控制台路径文字。
+        self._tools_path_label.setText(f"ldconsole：{ldconsole_path}")
+        # 【通用】将自动发现结果写入可视化日志。
+        self._append_log(f"已自动找到 ldconsole：{ldconsole_path}")
+        # 【通用】将自动发现的 ADB 路径写入日志。
+        self._append_log(f"已自动找到 ADB：{adb_path}")
 
     # 【通用】为指定队伍建立四角色控制面板。
     def _build_team_panel(self, team_id: int) -> QGroupBox:

@@ -34,8 +34,8 @@ def main() -> int:
         return 1
     # 【通用】使用配置路径建立雷电服务。
     ldplayer = LdPlayerService(settings.ldconsole_path)
-    # 【通用】建立可视化中控台主窗口。
-    window = MainWindow(settings, ldplayer)
+    # 【通用】建立可视化中控台主窗口并提供本机配置保存位置。
+    window = MainWindow(settings, ldplayer, settings_path)
     # 【通用】显示主窗口。
     window.show()
     # 【通用】进入 Qt 事件循环并返回最终退出码。
