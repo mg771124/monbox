@@ -1,11 +1,13 @@
 """【通用】验证默认配置会建立两队八窗口。"""
 
+# 【通用】导入数据类替换工具以更新不可变配置。
+from dataclasses import replace
 # 【通用】导入路径类型建立不存在的配置位置。
 from pathlib import Path
 # 【通用】导入配置加载、资料夹搜索和保存函数。
 from monsterbox.config import find_ldplayer_tools, load_settings, save_settings
-# 【通用】导入角色枚举验证每队结构。
-from monsterbox.models import Role
+# 【通用】导入角色枚举和身份分配函数验证每队结构。
+from monsterbox.models import Role, clear_instance_assignment, find_assignment
 
 
 # 【通用】验证无本机配置时使用稳定默认映射。
@@ -60,3 +62,24 @@ def test_save_settings_persists_discovered_tools(tmp_path: Path) -> None:
     assert loaded.ldconsole_path == settings.ldconsole_path
     # 【通用】确认两队配置没有因路径保存而丢失。
     assert [team.team_id for team in loaded.teams] == [1, 2]
+
+
+# 【通用】验证取消分配后的空位可以在配置中保存并重新加载。
+def test_save_settings_persists_empty_identity_slots(tmp_path: Path) -> None:
+    """【通用】右键取消分配后重启程序仍应保留空位状态。"""
+
+    # 【通用】加载默认两队配置作为保存来源。
+    settings = load_settings(tmp_path / "missing.json")
+    # 【通用】把第 1 队队长使用的实例 0 取消分配。
+    updated = replace(settings, teams=clear_instance_assignment(settings.teams, 0))
+    # 【通用】指定隔离的测试配置文件。
+    settings_path = tmp_path / "config" / "settings.json"
+    # 【通用】保存包含空位的配置。
+    save_settings(settings_path, updated)
+    # 【通用】重新加载保存后的配置。
+    loaded = load_settings(settings_path)
+    # 【通用】空位以 -1 保存并保持未分配状态。
+    assert loaded.teams[0].bindings[Role.LEADER].instance_index == -1
+    assert find_assignment(loaded.teams, 0) is None
+    # 【通用】其余七个窗口的分配不受影响。
+    assert find_assignment(loaded.teams, 7) == (2, Role.MEMBER_3)

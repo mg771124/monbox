@@ -76,6 +76,14 @@ class TeamOrchestrator:
 
         # 【通用】依次检查四个角色，队员2与3走同一逻辑。
         for role, binding in team.bindings.items():
+            # 【通用】空位身份没有模拟器，直接标记离线，避免发送无效命令。
+            if not binding.is_assigned:
+                # 【通用】空位不参与任务执行，也不显示为异常。
+                binding.status = DeviceStatus.OFFLINE
+                # 【通用】记录空位状态并继续检查下一个身份。
+                statuses[role] = binding.status
+                # 【通用】跳过该身份后续的序列号查询。
+                continue
             # 【通用】如果还没有序列号，尝试从运行中实例缓存获取。
             if not binding.adb_serial and binding.instance_index in running_serials:
                 binding.adb_serial = running_serials[binding.instance_index]
@@ -233,6 +241,13 @@ class TeamOrchestrator:
         """【通用】更新设备绑定序列号，通常在自动获取失败后手动指定。"""
         team = self._teams[team_id]
         team.bindings[role].adb_serial = adb_serial
+
+    # 【通用】用户通过右键菜单调整队伍身份后同步最新绑定。
+    def apply_teams(self, teams: tuple[TeamConfig, ...]) -> None:
+        """【通用】只替换队伍配置，保留线程池和各角色运行器，避免打断正在运行的任务。"""
+
+        # 【通用】按队伍编号重新建立快速索引。
+        self._teams = {team.team_id: team for team in teams}
 
     # 【通用】关闭编排器，释放线程池资源。
     def shutdown(self) -> None:
