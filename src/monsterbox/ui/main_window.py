@@ -9,13 +9,13 @@ from pathlib import Path
 # 【通用】导入 PySide6 核心信号和线程池组件。
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 # 【通用】导入中控台所需界面控件。
-from PySide6.QtWidgets import QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QGridLayout, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 # 【通用】导入应用配置、资料夹搜索和持久化函数。
 from monsterbox.config import AppSettings, find_ldplayer_tools, save_settings
 # 【通用】导入固定角色定义。
 from monsterbox.models import Role
-# 【通用】导入雷电生命周期服务。
-from monsterbox.services.ldplayer import LdPlayerService
+# 【通用】导入雷电生命周期服务和实例表格模型。
+from monsterbox.services.ldplayer import LdPlayerInstance, LdPlayerService
 
 
 # 【通用】定义后台任务完成和失败信号，防止工作阻塞界面线程。
@@ -26,6 +26,8 @@ class WorkerSignals(QObject):
     succeeded = Signal(str)
     # 【通用】任务失败时发送错误文本。
     failed = Signal(str)
+    # 【通用】任务成功时传回服务层的结构化结果。
+    result = Signal(object)
 
 
 # 【通用】在线程池执行单个可停止边界明确的控制命令。
@@ -57,6 +59,8 @@ class CommandWorker(QRunnable):
             succeeded = bool(getattr(result, "succeeded", True))
             # 【通用】成功时向主线程发送完成日志。
             if succeeded:
+                # 【通用】先传回结构化结果供表格等界面更新。
+                self.signals.result.emit(result)
                 # 【通用】说明任务已正常完成。
                 self.signals.succeeded.emit(f"{self._description}：成功")
             # 【通用】非零退出结果作为失败处理。
@@ -113,6 +117,40 @@ class MainWindow(QMainWindow):
         tools_layout.addWidget(browse_button)
         # 【通用】将工具路径区域放在两队面板上方。
         layout.addLayout(tools_layout)
+        # 【通用】创建雷电模拟器多选表格作为主要操作入口。
+        self._instance_table = QTableWidget(0, 6)
+        # 【通用】设置多选框、索引、名称、状态、队伍和角色栏位。
+        self._instance_table.setHorizontalHeaderLabels(["选择", "索引", "模拟器名称", "状态", "队伍", "角色"])
+        # 【通用】禁止直接编辑雷电实例资料。
+        self._instance_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # 【通用】让模拟器名称栏自动占用剩余宽度。
+        self._instance_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        # 【通用】建立表格批量操作按钮区域。
+        table_actions = QHBoxLayout()
+        # 【通用】创建重新读取雷电模拟器清单按钮。
+        refresh_button = QPushButton("刷新模拟器列表")
+        # 【通用】点击后通过后台服务读取 list2。
+        refresh_button.clicked.connect(self._refresh_instance_table)
+        # 【通用】将刷新按钮加入批量操作区。
+        table_actions.addWidget(refresh_button)
+        # 【通用】创建启动所有勾选模拟器按钮。
+        launch_selected_button = QPushButton("启动已选择")
+        # 【通用】点击后仅启动复选框已勾选的实例。
+        launch_selected_button.clicked.connect(lambda: self._run_selected_action("启动", self._ldplayer.launch))
+        # 【通用】将批量启动按钮加入操作区。
+        table_actions.addWidget(launch_selected_button)
+        # 【通用】创建关闭所有勾选模拟器按钮。
+        quit_selected_button = QPushButton("关闭已选择")
+        # 【通用】点击后仅关闭复选框已勾选的实例。
+        quit_selected_button.clicked.connect(lambda: self._run_selected_action("关闭", self._ldplayer.quit))
+        # 【通用】将批量关闭按钮加入操作区。
+        table_actions.addWidget(quit_selected_button)
+        # 【通用】将剩余空间放在按钮右侧。
+        table_actions.addStretch(1)
+        # 【通用】先显示表格，再显示固定两队角色面板。
+        layout.addWidget(self._instance_table, 1)
+        # 【通用】将表格操作按钮放在表格下方。
+        layout.addLayout(table_actions)
         # 【通用】建立两队横向排列区域。
         teams_layout = QHBoxLayout()
         # 【通用】为第 1 队和第 2 队分别建立角色面板。
@@ -135,6 +173,10 @@ class MainWindow(QMainWindow):
         self._append_log(f"ldconsole：{settings.ldconsole_path}")
         # 【通用】提示用户当前 ADB 配置路径。
         self._append_log(f"ADB：{settings.adb_path}")
+        # 【通用】工具路径有效时在启动后自动载入模拟器表格。
+        if settings.ldconsole_path.is_file():
+            # 【通用】通过后台线程读取清单，避免启动时冻结界面。
+            self._refresh_instance_table()
 
     # 【通用】打开资料夹浏览框并自动寻找雷电控制工具。
     def _choose_ldplayer_folder(self) -> None:
@@ -203,6 +245,116 @@ class MainWindow(QMainWindow):
         self._append_log(f"已自动找到 ldconsole：{ldconsole_path}")
         # 【通用】将自动发现的 ADB 路径写入日志。
         self._append_log(f"已自动找到 ADB：{adb_path}")
+        # 【通用】新路径应用后立即读取可勾选模拟器清单。
+        self._refresh_instance_table()
+
+    # 【通用】通过后台服务刷新模拟器多选表格。
+    def _refresh_instance_table(self) -> None:
+        """【通用】读取 ldconsole list2 并更新可勾选实例。"""
+
+        # 【通用】将服务查询送入线程池，结果交给表格填充方法。
+        self._run_command("刷新模拟器列表", self._ldplayer.get_instances, self._populate_instance_table)
+
+    # 【通用】使用结构化雷电实例资料填充多选表格。
+    def _populate_instance_table(self, result: object) -> None:
+        """【通用】显示实例名称、运行状态及已配置的队伍角色。"""
+
+        # 【通用】只接受服务层返回的实例清单。
+        if not isinstance(result, list):
+            # 【通用】非清单结果不修改当前表格。
+            return
+        # 【通用】保留刷新前已经勾选的实例索引。
+        selected_before = set(self._selected_instance_indexes())
+        # 【通用】移除旧行并按最新清单重新建立表格。
+        self._instance_table.setRowCount(0)
+        # 【通用】逐个显示所有雷电模拟器实例。
+        for instance in result:
+            # 【通用】忽略非预期实例类型，避免后台错误污染界面。
+            if not isinstance(instance, LdPlayerInstance):
+                # 【通用】继续处理下一条有效记录。
+                continue
+            # 【通用】在表格尾端新增一行。
+            row = self._instance_table.rowCount()
+            # 【通用】扩大表格行数以容纳当前实例。
+            self._instance_table.insertRow(row)
+            # 【通用】建立可勾选但不可编辑的选择项目。
+            selection_item = QTableWidgetItem()
+            # 【通用】启用复选框和选择功能。
+            selection_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable)
+            # 【通用】刷新时恢复该实例原来的勾选状态。
+            selection_item.setCheckState(Qt.CheckState.Checked if instance.index in selected_before else Qt.CheckState.Unchecked)
+            # 【通用】把实例索引保存到项目数据，避免依赖显示文字解析。
+            selection_item.setData(Qt.ItemDataRole.UserRole, instance.index)
+            # 【通用】将多选框加入第一栏。
+            self._instance_table.setItem(row, 0, selection_item)
+            # 【通用】显示雷电实例索引。
+            self._instance_table.setItem(row, 1, QTableWidgetItem(str(instance.index)))
+            # 【通用】显示用户设置的模拟器名称。
+            self._instance_table.setItem(row, 2, QTableWidgetItem(instance.name))
+            # 【通用】根据安卓启动标志显示运行状态。
+            status_text = "运行中" if instance.android_started else "未启动"
+            # 【通用】将状态写入表格。
+            self._instance_table.setItem(row, 3, QTableWidgetItem(status_text))
+            # 【通用】查找当前实例是否已经绑定固定队伍角色。
+            assignment = self._find_instance_assignment(instance.index)
+            # 【通用】显示绑定队伍或未分配。
+            self._instance_table.setItem(row, 4, QTableWidgetItem(str(assignment[0]) if assignment else "未分配"))
+            # 【通用】显示绑定角色或未分配。
+            self._instance_table.setItem(row, 5, QTableWidgetItem(assignment[1].value if assignment else "未分配"))
+
+    # 【通用】查找实例索引对应的固定队伍与角色。
+    def _find_instance_assignment(self, instance_index: int) -> tuple[int, Role] | None:
+        """【通用】返回实例所属队伍角色，未绑定时返回空值。"""
+
+        # 【通用】依次检查两支队伍。
+        for team in self._settings.teams:
+            # 【通用】依次检查队长、队员1及共享逻辑队员2/3。
+            for role, binding in team.bindings.items():
+                # 【通用】实例索引一致时返回对应关系。
+                if binding.instance_index == instance_index:
+                    # 【通用】返回固定队伍编号和角色。
+                    return team.team_id, role
+        # 【通用】没有任何绑定时返回空值。
+        return None
+
+    # 【通用】取得表格中所有已勾选模拟器索引。
+    def _selected_instance_indexes(self) -> list[int]:
+        """【通用】按表格顺序返回多选框已勾选的实例。"""
+
+        # 【通用】准备保存用户选择结果。
+        selected: list[int] = []
+        # 【通用】逐行检查第一栏复选框。
+        for row in range(self._instance_table.rowCount()):
+            # 【通用】读取当前行的选择项目。
+            item = self._instance_table.item(row, 0)
+            # 【通用】仅处理存在且已勾选的项目。
+            if item is not None and item.checkState() is Qt.CheckState.Checked:
+                # 【通用】读取项目中保存的真实实例索引。
+                selected.append(int(item.data(Qt.ItemDataRole.UserRole)))
+        # 【通用】返回全部勾选实例。
+        return selected
+
+    # 【通用】对所有勾选模拟器执行启动或关闭服务操作。
+    def _run_selected_action(self, action_name: str, operation: Callable[[int], object]) -> None:
+        """【通用】批量操作多选实例，单一失败不阻塞其他实例。"""
+
+        # 【通用】读取用户当前勾选的全部实例。
+        indexes = self._selected_instance_indexes()
+        # 【通用】未勾选任何实例时提供明确提示。
+        if not indexes:
+            # 【通用】在日志区说明需要先勾选表格项目。
+            self._append_log("请先在表格勾选至少一个模拟器")
+            # 【通用】停止空批量操作。
+            return
+        # 【通用】为每个勾选实例建立独立后台任务。
+        for instance_index in indexes:
+            # 【通用】绑定当前索引，避免循环闭包引用最后一个值。
+            self._run_command(
+                # 【通用】提供包含实例索引的日志说明。
+                f"实例 {instance_index} {action_name}",
+                # 【通用】调用服务层启动或关闭函数。
+                lambda index=instance_index: operation(index),
+            )
 
     # 【通用】为指定队伍建立四角色控制面板。
     def _build_team_panel(self, team_id: int) -> QGroupBox:
@@ -246,11 +398,15 @@ class MainWindow(QMainWindow):
         return panel
 
     # 【通用】提交后台控制任务并连接日志信号。
-    def _run_command(self, description: str, operation: Callable[[], object]) -> None:
-        """【通用】在 Qt 线程池运行服务方法。"""
+    def _run_command(self, description: str, operation: Callable[[], object], result_handler: Callable[[object], None] | None = None) -> None:
+        """【通用】在 Qt 线程池运行服务方法并按需处理结构化结果。"""
 
         # 【通用】创建一次性命令任务。
         worker = CommandWorker(description, operation)
+        # 【通用】调用方提供结果处理器时连接结构化结果信号。
+        if result_handler is not None:
+            # 【通用】确保表格更新等操作回到 Qt 主线程执行。
+            worker.signals.result.connect(result_handler)
         # 【通用】将成功消息连接至日志区域。
         worker.signals.succeeded.connect(self._append_log)
         # 【通用】将失败消息连接至日志区域。

@@ -45,7 +45,9 @@ def run_command(executable: Path, arguments: list[str], timeout_seconds: float =
         capture_output=True,
         # 【通用】以文本方式解码输出。
         text=True,
-        # 【通用】使用系统区域设置并容忍工具的异常字符。
+        # 【通用】雷电与 ADB 命令统一使用 UTF-8 输出中文实例名称。
+        encoding="utf-8",
+        # 【通用】容忍外部工具偶发的异常字符。
         errors="replace",
         # 【通用】限制命令最长运行时间，避免界面任务永久等待。
         timeout=timeout_seconds,

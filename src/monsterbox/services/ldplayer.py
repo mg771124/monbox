@@ -1,9 +1,67 @@
 """【通用】封装雷电模拟器 ldconsole 实例生命周期操作。"""
 
+# 【通用】导入数据类以描述雷电实例列表记录。
+from dataclasses import dataclass
 # 【通用】导入路径类型以保存 ldconsole 安装位置。
 from pathlib import Path
 # 【通用】导入安全命令执行器。
 from monsterbox.services.command import CommandResult, run_command
+
+
+# 【通用】保存 ldconsole list2 返回的单个模拟器资料。
+@dataclass(frozen=True, slots=True)
+class LdPlayerInstance:
+    """【通用】提供中控台表格显示所需的实例状态。"""
+
+    # 【通用】保存雷电实例索引。
+    index: int
+    # 【通用】保存雷电实例名称。
+    name: str
+    # 【通用】保存安卓系统是否已经启动。
+    android_started: bool
+    # 【通用】保存雷电模拟器进程编号。
+    process_id: int
+
+
+# 【通用】解析 ldconsole list2 的多行文字输出。
+def parse_instance_list(output: str) -> list[LdPlayerInstance]:
+    """【通用】将雷电实例文字转换为可排序的表格记录。"""
+
+    # 【通用】准备保存所有格式正确的模拟器记录。
+    instances: list[LdPlayerInstance] = []
+    # 【通用】逐行解析雷电返回内容。
+    for line in output.splitlines():
+        # 【通用】跳过空白行，避免产生无效实例。
+        if not line.strip():
+            # 【通用】继续处理下一条记录。
+            continue
+        # 【通用】按雷电 list2 的逗号格式拆分字段。
+        fields = [field.strip() for field in line.split(",")]
+        # 【通用】字段不足时拒绝不完整记录。
+        if len(fields) < 7:
+            # 【通用】向上层报告雷电输出格式异常。
+            raise ValueError(f"无法解析雷电实例资料：{line}")
+        # 【通用】转换索引、启动标志和进程编号。
+        try:
+            # 【通用】建立不可变实例记录供界面安全使用。
+            instance = LdPlayerInstance(
+                # 【通用】第一个字段是实例索引。
+                index=int(fields[0]),
+                # 【通用】第二个字段是用户设置的实例名称。
+                name=fields[1],
+                # 【通用】第五个字段以 1 表示安卓已经启动。
+                android_started=fields[4] == "1",
+                # 【通用】第六个字段是模拟器进程编号。
+                process_id=int(fields[5]),
+            )
+        # 【通用】数字字段异常时转换为明确的格式错误。
+        except ValueError as error:
+            # 【通用】保留原始记录便于用户排查雷电版本差异。
+            raise ValueError(f"无法解析雷电实例资料：{line}") from error
+        # 【通用】加入有效实例记录。
+        instances.append(instance)
+    # 【通用】按实例索引排序，保证表格顺序稳定。
+    return sorted(instances, key=lambda item: item.index)
 
 
 # 【通用】集中管理雷电模拟器实例。
@@ -37,3 +95,16 @@ class LdPlayerService:
 
         # 【通用】调用 list2 获取实例索引、名称和运行状态。
         return run_command(self._executable, ["list2"])
+
+    # 【通用】查询并解析可供多选表格显示的全部实例。
+    def get_instances(self) -> list[LdPlayerInstance]:
+        """【通用】返回按索引排序的雷电模拟器记录。"""
+
+        # 【通用】通过现有服务方法取得原始命令结果。
+        result = self.list_instances()
+        # 【通用】命令失败时不使用可能不完整的标准输出。
+        if not result.succeeded:
+            # 【通用】向界面返回雷电工具提供的错误原因。
+            raise RuntimeError(result.stderr or "无法取得雷电模拟器列表")
+        # 【通用】解析有效输出并返回结构化实例清单。
+        return parse_instance_list(result.stdout)
