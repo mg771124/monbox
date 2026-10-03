@@ -1,0 +1,51 @@
+{
+  "name": "示例任务",
+  "description": "这是一个示例规则，展示点击和等待步骤；识图点击需自行配置template图片路径",
+  "sync_leader_taps": true,
+  "default_wait": 0.8,
+  "default_threshold": 0.9,
+  "default_retries": 3,
+  "leader_steps": [
+    {
+      "type": "等待",
+      "seconds": 1.0
+    },
+    {
+      "type": "点击",
+      "x": 540,
+      "y": 1200,
+      "retries": 3
+    },
+    {
+      "type": "等待",
+      "seconds": 0.5
+    },
+    {
+      "type": "点击",
+      "x": 540,
+      "y": 800
+    }
+  ],
+  "member1_steps": [
+    {
+      "type": "等待",
+      "seconds": 1.5
+    },
+    {
+      "type": "点击",
+      "x": 540,
+      "y": 1200
+    }
+  ],
+  "shared_member_steps": [
+    {
+      "type": "等待",
+      "seconds": 2.0
+    },
+    {
+      "type": "点击",
+      "x": 540,
+      "y": 1200
+    }
+  ]
+}
