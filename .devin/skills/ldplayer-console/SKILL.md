@@ -25,3 +25,4 @@ triggers:
 9. 新建临时代码、调试脚本、截图、日志或测试产物后，必须在验证结束时删除。
 10. 完成修改后运行相关测试、静态检查和最小启动验证，并报告未能验证的项目。
 11. 最后检查未引用函数、失效参数、重复逻辑和孤儿代码，确保项目目录整洁。
+12. 所有外部命令必须静默执行（复用 `monsterbox.services.command.run_command`，Windows 使用 `CREATE_NO_WINDOW` 与隐藏 `STARTUPINFO`），禁止弹出 CMD 视窗。

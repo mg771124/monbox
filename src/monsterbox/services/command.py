@@ -1,11 +1,36 @@
-"""【通用】提供安全、可超时且不经过 Shell 的外部命令执行器。"""
+"""【通用】提供安全、可超时、静默且不经过 Shell 的外部命令执行器。"""
 
+# 【通用】导入操作系统模块以识别 Windows 平台。
+import os
 # 【通用】导入子进程模块以调用 ldconsole 和 ADB。
 import subprocess
 # 【通用】导入数据类以返回结构化命令结果。
 from dataclasses import dataclass
 # 【通用】导入路径类型以兼容 Windows 可执行文件路径。
 from pathlib import Path
+
+
+# 【通用】建立隐藏子进程控制台窗口的执行参数。
+def silent_process_options() -> dict:
+    """【通用】返回 Windows 下不弹出 CMD 视窗的 subprocess 参数，其他系统返回空字典。"""
+
+    # 【通用】非 Windows 平台不存在控制台窗口闪烁问题，直接返回空参数。
+    if os.name != "nt":
+        # 【通用】空字典展开后不会改变原有调用行为。
+        return {}
+    # 【通用】建立 Windows 专用启动信息对象。
+    startup_info = subprocess.STARTUPINFO()
+    # 【通用】要求系统采用下面设置的窗口显示方式。
+    startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    # 【通用】把窗口显示方式设置为隐藏，兼容不支持 CREATE_NO_WINDOW 的旧系统。
+    startup_info.wShowWindow = subprocess.SW_HIDE
+    # 【通用】返回静默执行所需的完整参数。
+    return {
+        # 【通用】CREATE_NO_WINDOW 让 ldconsole、ADB 等控制台程序在后台运行，不弹出 CMD 视窗。
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        # 【通用】同时提供隐藏窗口的启动信息作为双保险。
+        "startupinfo": startup_info,
+    }
 
 
 # 【通用】保存外部命令的标准化执行结果。
@@ -31,7 +56,7 @@ class CommandResult:
 
 # 【通用】以参数列表安全执行外部程序。
 def run_command(executable: Path, arguments: list[str], timeout_seconds: float = 15) -> CommandResult:
-    """【通用】执行命令并在超时后终止，禁止拼接 Shell 字符串。"""
+    """【通用】静默执行命令并在超时后终止，禁止拼接 Shell 字符串。"""
 
     # 【通用】校验可执行文件存在，提前提供清晰错误。
     if not executable.is_file():
@@ -55,6 +80,8 @@ def run_command(executable: Path, arguments: list[str], timeout_seconds: float =
         shell=False,
         # 【通用】不自动抛出非零退出码，交由服务层解释。
         check=False,
+        # 【通用】应用 Windows 静默参数，启动模拟器等操作不会跳出 CMD 视窗。
+        **silent_process_options(),
     )
     # 【通用】转换为不可变结果对象供上层处理。
     return CommandResult(process.returncode, process.stdout.strip(), process.stderr.strip())
