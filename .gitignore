@@ -11,5 +11,10 @@ __pycache__/
 # 【通用】忽略运行日志和临时截图。
 logs/
 tmp/
+# 【通用】忽略 PyInstaller 编译过程和成品目录。
+build/
+dist/
+# 【通用】忽略命令行编译自动生成的规格文件。
+*.spec
 # 【通用】保留配置示例但忽略本机配置。
 config/settings.json

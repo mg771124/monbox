@@ -14,14 +14,26 @@ from monsterbox.services.ldplayer import LdPlayerService
 from monsterbox.ui.main_window import MainWindow
 
 
+# 【通用】取得源码运行或独立 EXE 对应的应用目录。
+def get_application_directory() -> Path:
+    """【通用】确保配置始终保存在 EXE 旁，而不是不确定的工作目录。"""
+
+    # 【通用】PyInstaller 独立程序会设置 frozen 标记。
+    if getattr(sys, "frozen", False):
+        # 【通用】独立 EXE 使用可执行文件所在资料夹作为应用目录。
+        return Path(sys.executable).resolve().parent
+    # 【通用】源码运行时使用当前项目工作目录保持既有开发行为。
+    return Path.cwd()
+
+
 # 【通用】建立并运行桌面应用。
 def main() -> int:
     """【通用】加载配置、建立服务并进入 Qt 事件循环。"""
 
     # 【通用】创建 Qt 应用并传入系统启动参数。
     application = QApplication(sys.argv)
-    # 【通用】定位项目约定的本机配置文件。
-    settings_path = Path("config/settings.json")
+    # 【通用】定位源码目录或 EXE 旁的本机配置文件。
+    settings_path = get_application_directory() / "config" / "settings.json"
     # 【通用】捕获配置错误并以图形方式提示用户。
     try:
         # 【通用】读取两队八窗口设置。
