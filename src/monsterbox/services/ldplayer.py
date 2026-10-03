@@ -89,6 +89,25 @@ class LdPlayerService:
         # 【通用】使用雷电官方 quit 命令关闭实例。
         return run_command(self._executable, ["quit", "--index", str(instance_index)], 30)
 
+    # 【通用】查询指定实例的 ADB 设备序列号。
+    def get_adb_serial(self, instance_index: int) -> str:
+        """【通用】通过 ldconsole adb --index 获取实例连接地址。"""
+
+        # 【通用】调用雷电官方 adb 命令查询调试地址。
+        result = run_command(self._executable, ["adb", "--index", str(instance_index), "--command", "get-serialno"], 10)
+        # 【通用】命令失败时向上层报告错误，避免返回空序列号。
+        if not result.succeeded:
+            # 【通用】提取错误信息供日志显示。
+            raise RuntimeError(result.stderr or f"无法取得实例 {instance_index} 的 ADB 序列号")
+        # 【通用】雷电返回 emulator-5554 或 127.0.0.1:5555 格式。
+        serial = result.stdout.strip()
+        # 【通用】空结果视为实例未启动或ADB未就绪。
+        if not serial:
+            # 【通用】向上层明确说明序列号缺失原因。
+            raise RuntimeError(f"实例 {instance_index} 未启动或 ADB 未就绪")
+        # 【通用】返回标准化设备序列号供 ADB -s 参数使用。
+        return serial
+
     # 【通用】查询全部实例文本信息供配置和状态解析使用。
     def list_instances(self) -> CommandResult:
         """【通用】返回 ldconsole list2 的原始实例列表。"""

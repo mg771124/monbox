@@ -53,6 +53,30 @@ class AdbService:
         # 【通用】发送滑动命令，队员2与3直接复用本实现。
         return self._device_command(serial, ["shell", "input", "swipe", str(start_x), str(start_y), str(end_x), str(end_y), str(duration_ms)])
 
+    # 【通用】获取当前所有在线ADB设备序列号列表。
+    def list_devices(self) -> list[str]:
+        """【通用】通过 adb devices 获取所有在线设备序列号（备用方案，当雷电自动获取失败时使用）。"""
+
+        import subprocess
+        # 【通用】执行 adb devices -l 列出所有连接设备。
+        process = subprocess.run(
+            [str(self._executable), "devices"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            shell=False,
+            check=False,
+        )
+        # 【通用】解析输出，跳过第一行"List of devices attached"。
+        devices = []
+        for line in process.stdout.strip().splitlines()[1:]:
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
+        return devices
+
     # 【通用】抓取设备当前画面供图像识别使用。
     def screenshot_png(self, serial: str) -> bytes:
         """【通用】直接返回 PNG 字节，不在项目目录留下临时截图。"""
