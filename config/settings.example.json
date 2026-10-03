@@ -1,0 +1,24 @@
+{
+  "ldconsole_path": "C:/LDPlayer/LDPlayer9/ldconsole.exe",
+  "adb_path": "C:/LDPlayer/LDPlayer9/adb.exe",
+  "teams": [
+    {
+      "team_id": 1,
+      "instances": {
+        "队长": 0,
+        "队员1": 1,
+        "队员2": 2,
+        "队员3": 3
+      }
+    },
+    {
+      "team_id": 2,
+      "instances": {
+        "队长": 4,
+        "队员1": 5,
+        "队员2": 6,
+        "队员3": 7
+      }
+    }
+  ]
+}

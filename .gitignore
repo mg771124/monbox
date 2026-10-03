@@ -1,0 +1,15 @@
+# 【通用】忽略 Python 编译缓存。
+__pycache__/
+*.py[cod]
+# 【通用】忽略本地虚拟环境。
+.venv/
+# 【通用】忽略可编辑安装生成的软件包元数据。
+*.egg-info/
+# 【通用】忽略测试与静态检查缓存。
+.pytest_cache/
+.ruff_cache/
+# 【通用】忽略运行日志和临时截图。
+logs/
+tmp/
+# 【通用】保留配置示例但忽略本机配置。
+config/settings.json

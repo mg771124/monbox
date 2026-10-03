@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monsterbox"
+version = "0.1.0"
+description = "雷电模拟器两队八窗口可视化中控台"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.9,<7",
+    "opencv-python-headless>=4.11,<5",
+    "numpy>=2.2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "ruff>=0.11,<1",
+]
+
+[project.scripts]
+monsterbox = "monsterbox.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["I001"]
