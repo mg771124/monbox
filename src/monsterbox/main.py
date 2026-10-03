@@ -1,5 +1,7 @@
 """【通用】启动 MonsterBox 两队八窗口可视化中控台。"""
 
+# 【通用】导入操作系统模块以识别 Windows 平台。
+import os
 # 【通用】导入系统参数供 Qt 应用初始化。
 import sys
 # 【通用】导入路径工具定位本机配置文件。
@@ -26,10 +28,50 @@ def get_application_directory() -> Path:
     return Path.cwd()
 
 
+# 【通用】隐藏本进程自带的控制台窗口，避免双击启动中控台时出现 CMD 视窗。
+def hide_own_console_window() -> bool:
+    """【通用】只在 Windows 且控制台仅属于本进程时隐藏，绝不隐藏用户自己打开的终端。"""
+
+    # 【通用】非 Windows 平台不存在 CMD 视窗问题。
+    if os.name != "nt":
+        # 【通用】直接返回未处理状态。
+        return False
+    # 【通用】捕获接口不可用的情况，缺少 ctypes 或调用失败时不影响启动。
+    try:
+        # 【通用】导入 ctypes 以调用 Windows 控制台与窗口接口。
+        import ctypes
+        # 【通用】取得内核对象接口函数集。
+        kernel32 = ctypes.windll.kernel32
+        # 【通用】读取当前进程关联的控制台窗口句柄。
+        console_handle = kernel32.GetConsoleWindow()
+        # 【通用】进程没有控制台时无需处理。
+        if not console_handle:
+            # 【通用】返回未处理状态。
+            return False
+        # 【通用】准备接收挂接在同一控制台的进程编号列表。
+        process_ids = (ctypes.c_uint * 16)()
+        # 【通用】读取挂接到该控制台的进程数量。
+        process_count = kernel32.GetConsoleProcessList(process_ids, 16)
+        # 【通用】控制台内还有其他进程（例如用户自己打开的终端）时保持不动，避免误隐藏。
+        if process_count > 1:
+            # 【通用】返回未处理状态。
+            return False
+        # 【通用】隐藏本进程独占的控制台窗口，参数 0 等于 SW_HIDE。
+        ctypes.windll.user32.ShowWindow(console_handle, 0)
+        # 【通用】返回已隐藏状态供调用方记录。
+        return True
+    # 【通用】接口缺失或调用失败时保持原有窗口，不影响程序运行。
+    except (AttributeError, OSError):
+        # 【通用】返回未处理状态。
+        return False
+
+
 # 【通用】建立并运行桌面应用。
 def main() -> int:
     """【通用】加载配置、建立服务并进入 Qt 事件循环。"""
 
+    # 【通用】先隐藏本进程独占的控制台窗口，确保双击启动时不出现 CMD 视窗。
+    hide_own_console_window()
     # 【通用】创建 Qt 应用并传入系统启动参数。
     application = QApplication(sys.argv)
     # 【通用】定位源码目录或 EXE 旁的本机配置文件。

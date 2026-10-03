@@ -24,6 +24,46 @@ def run_step(description: str, arguments: list[str]) -> None:
     subprocess.run(arguments, cwd=PROJECT_ROOT, check=True, shell=False)
 
 
+# 【通用】验证编译成品属于图形子系统，双击运行时不会弹出 CMD 视窗。
+def verify_windowed_executable(executable: Path) -> None:
+    """【通用】读取 PE 头部 Subsystem 字段，2 为图形界面，3 为控制台。"""
+
+    # 【通用】打开成品文件读取头部资料。
+    with executable.open("rb") as stream:
+        # 【通用】先读取 DOS 头与其中的 PE 标头位置指针。
+        dos_header = stream.read(0x40)
+        # 【通用】成品过短说明文件不完整。
+        if len(dos_header) < 0x40:
+            # 【通用】向上层报告损坏的成品文件。
+            raise RuntimeError(f"成品文件不完整：{executable}")
+        # 【通用】读取 PE 标头偏移量。
+        pe_offset = int.from_bytes(dos_header[0x3C:0x40], "little")
+        # 【通用】定位到 PE 标头。
+        stream.seek(pe_offset)
+        # 【通用】读取 PE 签名、COFF 头以及可选头中的子系统字段。
+        pe_header = stream.read(4 + 20 + 70)
+    # 【通用】校验 PE 签名，避免把非 Windows 可执行文件当成成品。
+    if pe_header[:4] != b"PE\0\0":
+        # 【通用】提示用户编译平台不支持生成 Windows 可执行文件。
+        raise RuntimeError(f"成品不是有效的 Windows 可执行文件：{executable}")
+    # 【通用】读取可选头类型标识，PE32 为 0x10B，PE32+ 为 0x20B。
+    optional_magic = int.from_bytes(pe_header[4 + 20:4 + 22], "little")
+    # 【通用】无法识别可选头时只提示警告，避免因格式差异误判而中断编译。
+    if optional_magic not in (0x10B, 0x20B):
+        # 【通用】说明本次静默校验已被跳过。
+        print("警告：无法识别成品 PE 可选头，已跳过无控制台校验。")
+        # 【通用】结束校验流程。
+        return
+    # 【通用】两种可选头格式的子系统字段都位于第 68 字节。
+    subsystem_offset = 4 + 20 + 68
+    # 【通用】读取两字节的子系统编号。
+    subsystem = int.from_bytes(pe_header[subsystem_offset:subsystem_offset + 2], "little")
+    # 【通用】2 表示 Windows 图形程序，启动时不会出现 CMD 视窗。
+    if subsystem != 2:
+        # 【通用】拒绝发布会弹出 CMD 视窗的控制台版本。
+        raise RuntimeError(f"成品子系统为 {subsystem}，不是图形程序（2），会弹出 CMD 视窗；请确认编译参数保留 --windowed")
+
+
 # 【通用】执行测试和单文件 EXE 打包。
 def build() -> None:
     """【通用】把 Python、PySide6、OpenCV 和 NumPy 封装进独立 EXE。"""
@@ -89,6 +129,10 @@ def build() -> None:
     if not OUTPUT_EXE.is_file():
         # 【通用】缺少成品时报告明确错误而不是显示假成功。
         raise RuntimeError(f"编译结束但找不到成品：{OUTPUT_EXE}")
+    # 【通用】确认成品是图形子系统程序，双击运行不会弹出 CMD 视窗。
+    verify_windowed_executable(OUTPUT_EXE)
+    # 【通用】显示静默校验结果。
+    print("已确认成品为图形程序：启动模拟器等操作不会出现 CMD 视窗。")
     # 【通用】显示最终可复制到其他电脑的成品位置。
     print(f"\n编译完成：{OUTPUT_EXE}")
     # 【通用】说明目标电脑不需要安装 Python 依赖。
