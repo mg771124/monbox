@@ -33,6 +33,18 @@ def silent_process_options() -> dict:
     }
 
 
+# 【通用】返回静默执行状态说明，供界面日志确认当前版本是否已启用静默。
+def silent_execution_description() -> str:
+    """【通用】用一行中文说明外部命令的静默策略，便于用户确认没有运行旧版本。"""
+
+    # 【通用】非 Windows 系统本身不会弹出 CMD 视窗。
+    if os.name != "nt":
+        # 【通用】说明当前系统不需要额外处理。
+        return "静默执行：不需要（当前系统不会弹出 CMD 视窗）"
+    # 【通用】Windows 下所有外部命令都带上不创建控制台窗口的参数。
+    return "静默执行：已启用（Windows 下启动模拟器、ADB、截图等操作均不弹出 CMD 视窗）"
+
+
 # 【通用】保存外部命令的标准化执行结果。
 @dataclass(frozen=True, slots=True)
 class CommandResult:

@@ -108,3 +108,17 @@ def test_run_command_rejects_missing_executable(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="找不到可执行文件"):
         # 【通用】传入不存在的可执行文件。
         run_command(tmp_path / "missing.exe", ["list2"])
+
+
+# 【通用】验证静默状态说明会明确告知当前平台的处理方式。
+def test_silent_execution_description_matches_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """【通用】用户需要凭日志确认当前版本是否启用了静默执行。"""
+
+    # 【通用】模拟非 Windows 平台。
+    monkeypatch.setattr(command, "os", SimpleNamespace(name="posix"))
+    # 【通用】说明文字必须指出不需要处理。
+    assert "不需要" in command.silent_execution_description()
+    # 【通用】模拟 Windows 平台。
+    monkeypatch.setattr(command, "os", SimpleNamespace(name="nt"))
+    # 【通用】说明文字必须指出静默已启用。
+    assert "已启用" in command.silent_execution_description()

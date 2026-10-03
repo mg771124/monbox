@@ -18,6 +18,8 @@ from monsterbox.config import AppSettings, find_ldplayer_tools, save_settings
 from monsterbox.models import DeviceBinding, DeviceStatus, Role, TeamConfig, clear_instance_assignment, find_assignment, reassign_instance
 # 【通用】导入统一ADB服务。
 from monsterbox.services.adb import AdbService
+# 【通用】导入静默执行状态说明，启动时提示用户当前版本的静默策略。
+from monsterbox.services.command import silent_execution_description
 # 【通用】导入雷电生命周期服务和实例表格模型。
 from monsterbox.services.ldplayer import LdPlayerInstance, LdPlayerService
 # 【通用】导入团队中控编排器。
@@ -250,6 +252,8 @@ class MainWindow(QMainWindow):
         self._append_log(f"ldconsole：{settings.ldconsole_path}")
         # 【通用】提示用户当前 ADB 配置路径。
         self._append_log(f"ADB：{settings.adb_path}")
+        # 【通用】提示当前版本的静默执行状态，若看不到此行说明运行的是旧版本。
+        self._append_log(silent_execution_description())
         # 【通用】启动时加载规则目录中的任务规则。
         self._load_rules_from_directory()
         # 【通用】工具路径有效时在启动后自动载入模拟器表格和设备状态。
