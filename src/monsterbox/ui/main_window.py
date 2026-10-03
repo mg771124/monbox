@@ -8,20 +8,40 @@ from dataclasses import replace
 from pathlib import Path
 # 【通用】导入 PySide6 核心信号和线程池组件。
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
-# 【通用】导入中控台所需界面控件，新增下拉框选择规则。
-from PySide6.QtWidgets import QFileDialog, QGridLayout, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QComboBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+# 【通用】导入菜单动作与状态颜色，供列表右键指定队伍身份使用。
+from PySide6.QtGui import QAction, QColor
+# 【通用】导入中控台所需界面控件，新增右键菜单和身份栏位。
+from PySide6.QtWidgets import QFileDialog, QHeaderView, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QPlainTextEdit, QComboBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 # 【通用】导入应用配置、资料夹搜索和持久化函数。
 from monsterbox.config import AppSettings, find_ldplayer_tools, save_settings
-# 【通用】导入固定角色定义。
-from monsterbox.models import DeviceStatus, Role
+# 【通用】导入固定角色定义和右键分配身份所需的队伍操作函数。
+from monsterbox.models import DeviceBinding, DeviceStatus, Role, TeamConfig, clear_instance_assignment, find_assignment, reassign_instance
 # 【通用】导入统一ADB服务。
 from monsterbox.services.adb import AdbService
+# 【通用】导入静默执行状态说明，启动时提示用户当前版本的静默策略。
+from monsterbox.services.command import silent_execution_description
 # 【通用】导入雷电生命周期服务和实例表格模型。
 from monsterbox.services.ldplayer import LdPlayerInstance, LdPlayerService
 # 【通用】导入团队中控编排器。
 from monsterbox.services.orchestrator import TeamOrchestrator
 # 【通用】导入规则加载功能。
 from monsterbox.services.rule_loader import TaskRule, create_example_rule, load_task_rule, scan_rule_directory
+
+
+# 【通用】定义设备状态在列表中的显示颜色，便于一眼区分在线情况。
+_DEVICE_STATUS_COLORS: dict[DeviceStatus, str] = {
+    # 【通用】尚未检查的设备使用灰色提示。
+    DeviceStatus.UNKNOWN: "#808080",
+    # 【通用】在线设备使用绿色表示可以执行任务。
+    DeviceStatus.ONLINE: "#008000",
+    # 【通用】离线设备使用灰色表示未启动或未连接。
+    DeviceStatus.OFFLINE: "#808080",
+    # 【通用】异常设备使用红色提醒用户排查。
+    DeviceStatus.ERROR: "#c00000",
+}
+
+# 【通用】定义未指定身份的窗口文字颜色，提示用户需要右键设置。
+_UNASSIGNED_TEXT_COLOR = "#808080"
 
 
 # 【通用】定义后台任务完成和失败信号，防止工作阻塞界面线程。
@@ -34,6 +54,8 @@ class WorkerSignals(QObject):
     failed = Signal(str)
     # 【通用】任务成功时传回服务层的结构化结果。
     result = Signal(object)
+    # 【通用】任务处理完毕时发出，用于释放主窗口持有的任务引用。
+    finished = Signal()
 
 
 # 【通用】在线程池执行单个可停止边界明确的控制命令。
@@ -79,6 +101,10 @@ class CommandWorker(QRunnable):
         except (OSError, ValueError, RuntimeError) as error:
             # 【通用】将异常转换为中文日志而不终止应用。
             self.signals.failed.emit(f"{self._description}：{error}")
+        # 【通用】无论成功或失败都通知主线程，便于释放任务引用。
+        finally:
+            # 【通用】排在结果和日志信号之后发出，保证投递顺序。
+            self.signals.finished.emit()
 
 
 # 【通用】展示两队八窗口并提供实例启动、关闭和日志反馈。
@@ -107,8 +133,12 @@ class MainWindow(QMainWindow):
         self._loaded_rules: dict[str, TaskRule] = {}
         # 【通用】当前选中的规则名称。
         self._selected_rule_name: str = ""
-        # 【通用】保存各角色状态标签引用，供刷新时更新。
-        self._status_labels: dict[tuple[int, Role], QLabel] = {}
+        # 【通用】缓存每个实例最近的 ADB 设备状态，供列表“设备状态”栏显示。
+        self._device_statuses: dict[int, DeviceStatus] = {}
+        # 【通用】缓存最近一次读取到的模拟器清单，右键分配身份后无需再次查询雷电。
+        self._instances: list[LdPlayerInstance] = []
+        # 【通用】持有正在运行的后台任务引用，避免任务对象被回收导致结果信号无法送达界面。
+        self._active_workers: set[CommandWorker] = set()
         # 【通用】使用全局线程池执行外部命令。
         self._thread_pool = QThreadPool.globalInstance()
         # 【通用】设置包含项目版本职责的窗口标题。
@@ -164,14 +194,18 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(stop_task_button)
         # 【通用】将中控区域加入主布局。
         layout.addLayout(control_layout)
-        # 【通用】创建雷电模拟器多选表格作为主要操作入口。
-        self._instance_table = QTableWidget(0, 6)
-        # 【通用】设置多选框、索引、名称、状态、队伍和角色栏位。
-        self._instance_table.setHorizontalHeaderLabels(["选择", "索引", "模拟器名称", "状态", "队伍", "角色"])
+        # 【通用】创建雷电模拟器多选表格，作为启动窗口和指定身份的唯一入口。
+        self._instance_table = QTableWidget(0, 7)
+        # 【通用】设置多选框、索引、名称、运行状态、设备状态、队伍和身份栏位。
+        self._instance_table.setHorizontalHeaderLabels(["选择", "索引", "模拟器名称", "运行状态", "设备状态", "队伍", "身份"])
         # 【通用】禁止直接编辑雷电实例资料。
         self._instance_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         # 【通用】让模拟器名称栏自动占用剩余宽度。
         self._instance_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        # 【通用】启用自定义右键菜单，用于指定该窗口是第几队以及什么身份。
+        self._instance_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # 【通用】把右键事件连接到菜单方法，界面层只组装菜单不执行外部命令。
+        self._instance_table.customContextMenuRequested.connect(self._show_instance_context_menu)
         # 【通用】建立表格批量操作按钮区域。
         table_actions = QHBoxLayout()
         # 【通用】创建重新读取雷电模拟器清单按钮。
@@ -194,18 +228,16 @@ class MainWindow(QMainWindow):
         table_actions.addWidget(quit_selected_button)
         # 【通用】将剩余空间放在按钮右侧。
         table_actions.addStretch(1)
-        # 【通用】先显示表格，再显示固定两队角色面板。
+        # 【通用】显示操作说明，告诉用户如何指定每个窗口的队伍与身份。
+        hint_label = QLabel("提示：在列表中右键某一行的模拟器，即可指定它属于第 1 队或第 2 队，身份可选择队长、队员1、队员2、队员3；四个身份的游戏逻辑各不相同，未指定身份的窗口不会执行任务。")
+        # 【通用】允许提示文字自动换行以适配窄窗口。
+        hint_label.setWordWrap(True)
+        # 【通用】将提示放在表格上方。
+        layout.addWidget(hint_label)
+        # 【通用】把模拟器列表作为唯一窗口操作区域并占用主要空间。
         layout.addWidget(self._instance_table, 1)
         # 【通用】将表格操作按钮放在表格下方。
         layout.addLayout(table_actions)
-        # 【通用】建立两队横向排列区域。
-        teams_layout = QHBoxLayout()
-        # 【通用】为第 1 队和第 2 队分别建立角色面板。
-        for team in self._settings.teams:
-            # 【通用】将队伍面板加入横向布局。
-            teams_layout.addWidget(self._build_team_panel(team.team_id))
-        # 【通用】将两队区域加入主布局并占主要空间。
-        layout.addLayout(teams_layout, 1)
         # 【通用】创建只读日志区域反馈后台任务状态。
         self._log = QPlainTextEdit()
         # 【通用】禁止用户误改运行日志。
@@ -220,6 +252,8 @@ class MainWindow(QMainWindow):
         self._append_log(f"ldconsole：{settings.ldconsole_path}")
         # 【通用】提示用户当前 ADB 配置路径。
         self._append_log(f"ADB：{settings.adb_path}")
+        # 【通用】提示当前版本的静默执行状态，若看不到此行说明运行的是旧版本。
+        self._append_log(silent_execution_description())
         # 【通用】启动时加载规则目录中的任务规则。
         self._load_rules_from_directory()
         # 【通用】工具路径有效时在启动后自动载入模拟器表格和设备状态。
@@ -229,7 +263,7 @@ class MainWindow(QMainWindow):
             # 【通用】自动刷新所有设备状态（自动获取ADB序列号）。
             self._refresh_all_statuses()
 
-    # 【通用】刷新两队所有角色设备状态并更新UI。
+    # 【通用】刷新两队所有角色设备状态并更新列表。
     def _refresh_all_statuses(self) -> None:
         """【通用】通过中控编排器刷新8个设备的在线状态，自动获取ADB序列号。"""
 
@@ -243,22 +277,34 @@ class MainWindow(QMainWindow):
         def _handle_result(result: object) -> None:
             if not isinstance(result, dict):
                 return
-            # 【通用】更新界面上的状态标签。
+            # 【通用】把每个身份的设备状态按实例索引写入界面缓存。
             for team_id, statuses in result.items():
                 for role, status in statuses.items():
-                    label = self._status_labels.get((team_id, role))
-                    if label is not None:
-                        label.setText(f"状态：{status.value}")
-                        # 【通用】根据状态设置文字颜色提示。
-                        if status is DeviceStatus.ONLINE:
-                            label.setStyleSheet("color: green; font-weight: bold;")
-                        elif status is DeviceStatus.OFFLINE:
-                            label.setStyleSheet("color: gray;")
-                        else:
-                            label.setStyleSheet("color: red;")
+                    # 【通用】查找该队伍身份当前的绑定。
+                    binding = self._find_binding(team_id, role)
+                    # 【通用】空位身份没有实例可以显示，直接跳过。
+                    if binding is None or not binding.is_assigned:
+                        continue
+                    # 【通用】记录实例的最新状态供列表显示。
+                    self._device_statuses[binding.instance_index] = status
+            # 【通用】把最新状态刷新到列表的设备状态栏。
+            self._apply_device_statuses_to_table()
             self._append_log("设备状态刷新完成")
 
         self._run_command("刷新设备状态", _do_refresh, _handle_result)
+
+    # 【通用】查找指定队伍身份当前的绑定配置。
+    def _find_binding(self, team_id: int, role: Role) -> DeviceBinding | None:
+        """【通用】返回绑定对象供状态显示和右键菜单使用，队伍不存在时返回空值。"""
+
+        # 【通用】依次查找队伍编号一致的分组。
+        for team in self._settings.teams:
+            # 【通用】命中队伍后返回该身份对应的绑定。
+            if team.team_id == team_id:
+                # 【通用】返回绑定对象，可能处于空位状态。
+                return team.bindings[role]
+        # 【通用】配置中不存在该队伍时返回空值。
+        return None
 
     # 【通用】从规则目录加载所有任务规则到下拉框。
     def _load_rules_from_directory(self) -> None:
@@ -452,16 +498,16 @@ class MainWindow(QMainWindow):
         if not isinstance(result, list):
             # 【通用】非清单结果不修改当前表格。
             return
+        # 【通用】过滤非预期实例类型，避免后台错误污染界面。
+        instances = [instance for instance in result if isinstance(instance, LdPlayerInstance)]
+        # 【通用】缓存清单，右键指定身份后可直接重建表格而无需重新查询雷电。
+        self._instances = instances
         # 【通用】保留刷新前已经勾选的实例索引。
         selected_before = set(self._selected_instance_indexes())
         # 【通用】移除旧行并按最新清单重新建立表格。
         self._instance_table.setRowCount(0)
         # 【通用】逐个显示所有雷电模拟器实例。
-        for instance in result:
-            # 【通用】忽略非预期实例类型，避免后台错误污染界面。
-            if not isinstance(instance, LdPlayerInstance):
-                # 【通用】继续处理下一条有效记录。
-                continue
+        for instance in instances:
             # 【通用】在表格尾端新增一行。
             row = self._instance_table.rowCount()
             # 【通用】扩大表格行数以容纳当前实例。
@@ -480,31 +526,225 @@ class MainWindow(QMainWindow):
             self._instance_table.setItem(row, 1, QTableWidgetItem(str(instance.index)))
             # 【通用】显示用户设置的模拟器名称。
             self._instance_table.setItem(row, 2, QTableWidgetItem(instance.name))
-            # 【通用】根据安卓启动标志显示运行状态。
-            status_text = "运行中" if instance.android_started else "未启动"
-            # 【通用】将状态写入表格。
-            self._instance_table.setItem(row, 3, QTableWidgetItem(status_text))
-            # 【通用】查找当前实例是否已经绑定固定队伍角色。
-            assignment = self._find_instance_assignment(instance.index)
-            # 【通用】显示绑定队伍或未分配。
-            self._instance_table.setItem(row, 4, QTableWidgetItem(str(assignment[0]) if assignment else "未分配"))
-            # 【通用】显示绑定角色或未分配。
-            self._instance_table.setItem(row, 5, QTableWidgetItem(assignment[1].value if assignment else "未分配"))
+            # 【通用】根据安卓启动标志显示窗口运行状态。
+            running_text = "运行中" if instance.android_started else "未启动"
+            # 【通用】将运行状态写入表格。
+            self._instance_table.setItem(row, 3, QTableWidgetItem(running_text))
+            # 【通用】显示该实例最近一次 ADB 设备状态，默认未知。
+            self._instance_table.setItem(row, 4, self._build_device_status_item(instance.index))
+            # 【通用】查找当前实例被分配到的队伍与身份。
+            assignment = find_assignment(self._settings.teams, instance.index)
+            # 【通用】显示所属队伍，未指定身份时提示用户右键设置。
+            team_item = QTableWidgetItem(f"第 {assignment[0]} 队" if assignment else "未分配")
+            # 【通用】未分配窗口使用灰色文字提示需要右键指定身份。
+            if assignment is None:
+                # 【通用】设置提示颜色。
+                team_item.setForeground(QColor(_UNASSIGNED_TEXT_COLOR))
+                # 【通用】说明未分配窗口不会执行任务。
+                team_item.setToolTip("右键该行可以指定队伍与身份，未指定身份的窗口不会执行任务")
+            # 【通用】将队伍写入表格。
+            self._instance_table.setItem(row, 5, team_item)
+            # 【通用】显示身份，未分配时同样提示。
+            role_item = QTableWidgetItem(assignment[1].value if assignment else "未分配")
+            # 【通用】在身份栏显示该身份对应的游戏逻辑说明。
+            if assignment is not None:
+                # 【通用】说明不同身份的游戏逻辑差异。
+                role_item.setToolTip(assignment[1].logic_description)
+            # 【通用】将身份写入表格。
+            self._instance_table.setItem(row, 6, role_item)
 
-    # 【通用】查找实例索引对应的固定队伍与角色。
-    def _find_instance_assignment(self, instance_index: int) -> tuple[int, Role] | None:
-        """【通用】返回实例所属队伍角色，未绑定时返回空值。"""
+    # 【通用】建立显示设备状态的表格项目。
+    def _build_device_status_item(self, instance_index: int) -> QTableWidgetItem:
+        """【通用】读取状态缓存并套用颜色，供表格和状态刷新共同使用。"""
 
-        # 【通用】依次检查两支队伍。
-        for team in self._settings.teams:
-            # 【通用】依次检查队长、队员1及共享逻辑队员2/3。
-            for role, binding in team.bindings.items():
-                # 【通用】实例索引一致时返回对应关系。
-                if binding.instance_index == instance_index:
-                    # 【通用】返回固定队伍编号和角色。
-                    return team.team_id, role
-        # 【通用】没有任何绑定时返回空值。
-        return None
+        # 【通用】没有检查记录时显示未知状态。
+        status = self._device_statuses.get(instance_index, DeviceStatus.UNKNOWN)
+        # 【通用】建立状态文字项目。
+        item = QTableWidgetItem(status.value)
+        # 【通用】按在线情况设置文字颜色。
+        item.setForeground(QColor(_DEVICE_STATUS_COLORS[status]))
+        # 【通用】返回可直接加入表格的项目。
+        return item
+
+    # 【通用】把设备状态缓存刷新到列表的设备状态栏。
+    def _apply_device_statuses_to_table(self) -> None:
+        """【通用】状态刷新完成后调用，只更新文字不重建整张表格。"""
+
+        # 【通用】逐行读取实例索引。
+        for row in range(self._instance_table.rowCount()):
+            # 【通用】从选择项目读取真实实例索引。
+            instance_index = self._instance_index_at_row(row)
+            # 【通用】索引缺失时跳过该行。
+            if instance_index is None:
+                # 【通用】继续处理下一行。
+                continue
+            # 【通用】用最新状态替换当前单元格。
+            self._instance_table.setItem(row, 4, self._build_device_status_item(instance_index))
+
+    # 【通用】读取表格某一行保存的雷电实例索引。
+    def _instance_index_at_row(self, row: int) -> int | None:
+        """【通用】右键菜单和状态刷新都依赖该索引，避免解析显示文字。"""
+
+        # 【通用】读取第一栏保存实例索引的选择项目。
+        item = self._instance_table.item(row, 0)
+        # 【通用】该行缺少选择项目时返回空值。
+        if item is None:
+            # 【通用】向上层报告无法识别的行。
+            return None
+        # 【通用】读取选择项目中保存的实例索引。
+        data = item.data(Qt.ItemDataRole.UserRole)
+        # 【通用】项目数据缺失时同样视为无法识别。
+        if data is None:
+            # 【通用】向上层报告缺少实例索引的行。
+            return None
+        # 【通用】把项目数据转换为整数索引。
+        return int(data)
+
+    # 【通用】在列表行上弹出右键菜单，用于指定队伍与身份。
+    def _show_instance_context_menu(self, position) -> None:
+        """【通用】菜单结构为“第 1 队/第 2 队 → 队长/队员1/队员2/队员3”。"""
+
+        # 【通用】定位用户点击的表格行。
+        row = self._instance_table.rowAt(position.y())
+        # 【通用】点击表格空白区域时不显示菜单。
+        if row < 0:
+            # 【通用】直接结束本次右键操作。
+            return
+        # 【通用】读取该行对应的雷电实例索引。
+        instance_index = self._instance_index_at_row(row)
+        # 【通用】无法识别实例时终止，避免误分配给其他窗口。
+        if instance_index is None:
+            # 【通用】直接结束本次右键操作。
+            return
+        # 【通用】读取实例名称用于菜单标题。
+        name_item = self._instance_table.item(row, 2)
+        # 【通用】名称缺失时使用空文字兜底。
+        instance_name = name_item.text() if name_item is not None else ""
+        # 【通用】建立右键菜单。
+        menu = QMenu(self)
+        # 【通用】标题行只显示当前实例，不允许点击。
+        title_action = QAction(f"实例 {instance_index}：{instance_name}", self)
+        # 【通用】禁用标题避免被误当成可执行操作。
+        title_action.setEnabled(False)
+        # 【通用】把标题加入菜单。
+        menu.addAction(title_action)
+        # 【通用】在标题和身份选项之间加分隔线。
+        menu.addSeparator()
+        # 【通用】查询该实例当前的身份，用于在菜单中打勾。
+        current = find_assignment(self._settings.teams, instance_index)
+        # 【通用】两支队伍分别建立身份子菜单，身份决定游戏逻辑。
+        for team_id in (1, 2):
+            # 【通用】建立队伍子菜单。
+            team_menu = menu.addMenu(f"第 {team_id} 队")
+            # 【通用】四种身份的游戏逻辑互不相同，逐个列出。
+            for role in Role:
+                # 【通用】读取该身份当前占用的实例，用于显示空位或已占用实例。
+                binding = self._find_binding(team_id, role)
+                # 【通用】空位显示“空位”，已占用显示实例编号便于换位。
+                occupied = binding.instance_index if binding is not None and binding.is_assigned else None
+                # 【通用】组装子菜单文字。
+                label = f"{role.value}（实例 {occupied}）" if occupied is not None else f"{role.value}（空位）"
+                # 【通用】建立可选择身份的动作。
+                role_action = QAction(label, self)
+                # 【通用】允许打勾显示该实例当前身份。
+                role_action.setCheckable(True)
+                # 【通用】当前身份与菜单项一致时打勾。
+                role_action.setChecked(current == (team_id, role))
+                # 【通用】在悬停提示中说明该身份的游戏逻辑。
+                role_action.setToolTip(role.logic_description)
+                # 【通用】点击后把实例分配到该队伍身份。
+                role_action.triggered.connect(lambda _checked=False, tid=team_id, selected_role=role: self._assign_instance(instance_index, tid, selected_role))
+                # 【通用】把身份选项加入队伍子菜单。
+                team_menu.addAction(role_action)
+        # 【通用】在身份选项后加分隔线。
+        menu.addSeparator()
+        # 【通用】提供单个窗口的启动操作，替代原先的八格卡片按钮。
+        launch_action = QAction("启动窗口", self)
+        # 【通用】通过后台线程调用雷电服务启动该实例。
+        launch_action.triggered.connect(lambda _checked=False, index=instance_index: self._run_command(f"实例 {index} 启动", lambda: self._ldplayer.launch(index)))
+        # 【通用】把启动操作加入菜单。
+        menu.addAction(launch_action)
+        # 【通用】提供单个窗口的关闭操作。
+        quit_action = QAction("关闭窗口", self)
+        # 【通用】通过后台线程调用雷电服务关闭该实例。
+        quit_action.triggered.connect(lambda _checked=False, index=instance_index: self._run_command(f"实例 {index} 关闭", lambda: self._ldplayer.quit(index)))
+        # 【通用】把关闭操作加入菜单。
+        menu.addAction(quit_action)
+        # 【通用】已分配身份的实例才提供取消分配。
+        if current is not None:
+            # 【通用】在操作区前加分隔线。
+            menu.addSeparator()
+            # 【通用】建立取消分配动作。
+            unassign_action = QAction("取消分配身份", self)
+            # 【通用】点击后清空该实例占用的身份。
+            unassign_action.triggered.connect(lambda _checked=False, index=instance_index: self._clear_instance_assignment(index))
+            # 【通用】把取消分配加入菜单。
+            menu.addAction(unassign_action)
+        # 【通用】在鼠标位置弹出菜单。
+        menu.exec(self._instance_table.viewport().mapToGlobal(position))
+
+    # 【通用】把实例分配到指定队伍身份并持久化。
+    def _assign_instance(self, instance_index: int, team_id: int, role: Role) -> None:
+        """【通用】目标身份已占用时与占用者互换，空位时直接填入。"""
+
+        # 【通用】查询该实例当前身份，避免重复操作。
+        if find_assignment(self._settings.teams, instance_index) == (team_id, role):
+            # 【通用】提示用户无需修改。
+            self._append_log(f"实例 {instance_index} 已经是第 {team_id} 队 {role.value}")
+            # 【通用】直接结束。
+            return
+        # 【通用】按游戏逻辑把实例分配到目标身份。
+        try:
+            # 【通用】队伍模型负责交换或填入空位。
+            updated_teams = reassign_instance(self._settings.teams, instance_index, team_id, role)
+        # 【通用】捕获参数错误并提示用户。
+        except ValueError as error:
+            # 【通用】显示明确错误而不修改配置。
+            QMessageBox.warning(self, "指定身份失败", str(error))
+            # 【通用】结束分配流程。
+            return
+        # 【通用】保存配置并刷新列表显示。
+        self._apply_team_configuration(updated_teams, f"实例 {instance_index} 已指定为第 {team_id} 队 {role.value}（{role.logic_description}）")
+
+    # 【通用】取消实例的队伍身份。
+    def _clear_instance_assignment(self, instance_index: int) -> None:
+        """【通用】取消后该实例不再属于任何队伍，任务不会在它上面执行。"""
+
+        # 【通用】未分配身份的实例无需处理。
+        if find_assignment(self._settings.teams, instance_index) is None:
+            # 【通用】提示用户当前状态。
+            self._append_log(f"实例 {instance_index} 尚未分配队伍身份")
+            # 【通用】直接结束。
+            return
+        # 【通用】把该实例占用的身份全部置为空位。
+        updated_teams = clear_instance_assignment(self._settings.teams, instance_index)
+        # 【通用】保存配置并刷新列表显示。
+        self._apply_team_configuration(updated_teams, f"实例 {instance_index} 已取消分配身份")
+
+    # 【通用】保存调整后的队伍身份并同步给中控编排器。
+    def _apply_team_configuration(self, updated_teams: tuple[TeamConfig, ...], message: str) -> None:
+        """【通用】仅替换队伍绑定，保留工具路径和正在运行的任务。"""
+
+        # 【通用】保留外部工具路径，只替换两队的角色绑定。
+        updated_settings = replace(self._settings, teams=updated_teams)
+        # 【通用】捕获配置写入错误，避免显示已生效但实际未保存。
+        try:
+            # 【通用】把右键选择结果写入本机配置。
+            save_settings(self._settings_path, updated_settings)
+        # 【通用】处理目录权限或磁盘写入异常。
+        except OSError as error:
+            # 【通用】向用户显示保存失败原因。
+            QMessageBox.critical(self, "保存配置失败", str(error))
+            # 【通用】保存失败时不应用本次调整。
+            return
+        # 【通用】更新主窗口持有的应用配置。
+        self._settings = updated_settings
+        # 【通用】把最新绑定同步给编排器，保留线程池和运行中的任务。
+        self._orchestrator.apply_teams(updated_teams)
+        # 【通用】在日志区记录本次身份调整。
+        self._append_log(message)
+        # 【通用】使用缓存的模拟器清单重建列表，立即显示最新队伍与身份。
+        self._populate_instance_table(self._instances)
 
     # 【通用】取得表格中所有已勾选模拟器索引。
     def _selected_instance_indexes(self) -> list[int]:
@@ -545,58 +785,16 @@ class MainWindow(QMainWindow):
                 lambda index=instance_index: operation(index),
             )
 
-    # 【通用】为指定队伍建立四角色控制面板。
-    def _build_team_panel(self, team_id: int) -> QGroupBox:
-        """【通用】返回包含队长、队员1、队员2、队员3的面板，显示实时状态。"""
-
-        # 【通用】读取目标队伍配置。
-        team = next(item for item in self._settings.teams if item.team_id == team_id)
-        # 【通用】创建带队号标题的分组框。
-        panel = QGroupBox(f"第 {team_id} 队")
-        # 【通用】使用两行两列展示四个角色。
-        grid = QGridLayout(panel)
-        # 【通用】按固定枚举顺序生成角色卡片。
-        for position, role in enumerate(Role):
-            # 【通用】取得角色绑定的雷电实例索引。
-            binding = team.bindings[role]
-            # 【通用】创建当前角色卡片容器。
-            card = QGroupBox(role.value)
-            # 【通用】建立卡片垂直布局。
-            card_layout = QVBoxLayout(card)
-            # 【通用】显示角色对应实例索引。
-            card_layout.addWidget(QLabel(f"实例索引：{binding.instance_index}"))
-            # 【通用】显示设备状态标签，后续可动态更新。
-            status_label = QLabel(f"状态：{binding.status.value}")
-            card_layout.addWidget(status_label)
-            # 【通用】保存状态标签引用供刷新使用。
-            self._status_labels[(team_id, role)] = status_label
-            # 【通用】显示队员2与3共用策略说明。
-            strategy = "共享成员逻辑" if role.uses_shared_member_logic else "独立角色逻辑"
-            # 【通用】将策略说明加入卡片。
-            card_layout.addWidget(QLabel(f"策略：{strategy}"))
-            # 【通用】创建启动按钮。
-            launch_button = QPushButton("启动窗口")
-            # 【通用】绑定实例索引并将启动任务送入后台线程。
-            launch_button.clicked.connect(lambda _checked=False, index=binding.instance_index, label=f"第 {team_id} 队 {role.value}": self._run_command(f"{label} 启动", lambda: self._ldplayer.launch(index)))
-            # 【通用】将启动按钮加入卡片。
-            card_layout.addWidget(launch_button)
-            # 【通用】创建关闭按钮。
-            quit_button = QPushButton("关闭窗口")
-            # 【通用】绑定实例索引并将关闭任务送入后台线程。
-            quit_button.clicked.connect(lambda _checked=False, index=binding.instance_index, label=f"第 {team_id} 队 {role.value}": self._run_command(f"{label} 关闭", lambda: self._ldplayer.quit(index)))
-            # 【通用】将关闭按钮加入卡片。
-            card_layout.addWidget(quit_button)
-            # 【通用】按两列位置加入队伍网格。
-            grid.addWidget(card, position // 2, position % 2)
-        # 【通用】返回完整队伍面板。
-        return panel
-
     # 【通用】提交后台控制任务并连接日志信号。
     def _run_command(self, description: str, operation: Callable[[], object], result_handler: Callable[[object], None] | None = None) -> None:
         """【通用】在 Qt 线程池运行服务方法并按需处理结构化结果。"""
 
         # 【通用】创建一次性命令任务。
         worker = CommandWorker(description, operation)
+        # 【通用】保存任务引用，防止任务在线程池执行期间被回收而丢失结果信号。
+        self._active_workers.add(worker)
+        # 【通用】任务收尾后释放引用，避免长期占用内存。
+        worker.signals.finished.connect(lambda: self._active_workers.discard(worker))
         # 【通用】调用方提供结果处理器时连接结构化结果信号。
         if result_handler is not None:
             # 【通用】确保表格更新等操作回到 Qt 主线程执行。

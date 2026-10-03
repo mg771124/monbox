@@ -1,9 +1,11 @@
 """【通用】封装队长、队员1及队员2/3共用的 ADB 操作。"""
 
+# 【通用】导入子进程模块以执行需要二进制输出的截图命令。
+import subprocess
 # 【通用】导入路径类型以保存 ADB 程序位置。
 from pathlib import Path
-# 【通用】导入安全命令执行器和结果类型。
-from monsterbox.services.command import CommandResult, run_command
+# 【通用】导入安全命令执行器、静默参数和结果类型。
+from monsterbox.services.command import CommandResult, run_command, silent_process_options
 
 
 # 【通用】为所有队伍角色提供统一安卓控制能力。
@@ -57,24 +59,19 @@ class AdbService:
     def list_devices(self) -> list[str]:
         """【通用】通过 adb devices 获取所有在线设备序列号（备用方案，当雷电自动获取失败时使用）。"""
 
-        import subprocess
-        # 【通用】执行 adb devices -l 列出所有连接设备。
-        process = subprocess.run(
-            [str(self._executable), "devices"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            shell=False,
-            check=False,
-        )
+        # 【通用】复用统一执行器，Windows 下同样保持静默，不会弹出 CMD 视窗。
+        result = run_command(self._executable, ["devices"], 10)
+        # 【通用】准备保存可用的设备序列号。
+        devices: list[str] = []
         # 【通用】解析输出，跳过第一行"List of devices attached"。
-        devices = []
-        for line in process.stdout.strip().splitlines()[1:]:
+        for line in result.stdout.splitlines()[1:]:
+            # 【通用】按空白字符拆分序列号与连接状态。
             parts = line.strip().split()
+            # 【通用】仅收集状态为 device 的在线设备。
             if len(parts) >= 2 and parts[1] == "device":
+                # 【通用】保存可用设备序列号。
                 devices.append(parts[0])
+        # 【通用】返回在线设备清单供编排层使用。
         return devices
 
     # 【通用】抓取设备当前画面供图像识别使用。
@@ -82,9 +79,20 @@ class AdbService:
         """【通用】直接返回 PNG 字节，不在项目目录留下临时截图。"""
 
         # 【通用】单独执行二进制命令以避免文本解码破坏 PNG。
-        import subprocess
-        # 【通用】启动 exec-out screencap 并限制最长等待时间。
-        process = subprocess.run([str(self._executable), "-s", serial, "exec-out", "screencap", "-p"], capture_output=True, timeout=15, shell=False, check=False)
+        process = subprocess.run(
+            # 【通用】指定设备执行 exec-out 截图。
+            [str(self._executable), "-s", serial, "exec-out", "screencap", "-p"],
+            # 【通用】捕获二进制输出供图像识别使用。
+            capture_output=True,
+            # 【通用】限制最长等待时间，避免任务卡死。
+            timeout=15,
+            # 【通用】不启用 Shell。
+            shell=False,
+            # 【通用】不自动抛出非零退出码，由下方判断转为可读错误。
+            check=False,
+            # 【通用】应用 Windows 静默参数，识图截图不会跳出 CMD 视窗。
+            **silent_process_options(),
+        )
         # 【通用】非零退出码表示截图失败。
         if process.returncode != 0:
             # 【通用】将 ADB 错误转为可读异常供任务日志展示。
